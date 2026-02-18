@@ -110,7 +110,7 @@ func (v *Cmd) isSecureScheme(scheme string) bool {
 		// colon-separated list of schemes that are allowed to be used with git
 		// fetch/clone. Any scheme not mentioned will be considered insecure.
 		if allow := os.Getenv("GIT_ALLOW_PROTOCOL"); allow != "" {
-			for _, s := range strings.Split(allow, ":") {
+			for s := range strings.SplitSeq(allow, ":") {
 				if s == scheme {
 					return true
 				}
@@ -157,9 +157,9 @@ var vcsHg = &Cmd{
 	Name: "Mercurial",
 	Cmd:  "hg",
 
-	// HGPLAIN=1 turns off additional output that a user may have enabled via
-	// config options or certain extensions.
-	Env: []string{"HGPLAIN=1"},
+	// HGPLAIN=+strictflags turns off additional output that a user may have
+	// enabled via config options or certain extensions.
+	Env: []string{"HGPLAIN=+strictflags"},
 	RootNames: []rootName{
 		{filename: ".hg", isDir: true},
 	},
@@ -237,7 +237,7 @@ func parseRevTime(out []byte) (string, time.Time, error) {
 	}
 	rev := buf[:i]
 
-	secs, err := strconv.ParseInt(string(buf[i+1:]), 10, 64)
+	secs, err := strconv.ParseInt(buf[i+1:], 10, 64)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("unrecognized VCS tool output: %v", err)
 	}
@@ -253,7 +253,7 @@ var vcsGit = &Cmd{
 		{filename: ".git", isDir: true},
 	},
 
-	CreateCmd:   []string{"clone -- {repo} {dir}", "-go-internal-cd {dir} submodule update --init --recursive"},
+	CreateCmd:   []string{"clone -- {repo} {dir}", "--go-internal-cd {dir} submodule update --init --recursive"},
 	DownloadCmd: []string{"pull --ff-only", "submodule update --init --recursive"},
 
 	TagCmd: []tagCmd{
@@ -393,7 +393,7 @@ func bzrRemoteRepo(vcsBzr *Cmd, rootDir string) (remoteRepo string, err error) {
 }
 
 func bzrResolveRepo(vcsBzr *Cmd, rootDir, remoteRepo string) (realRepo string, err error) {
-	outb, err := vcsBzr.runOutput(rootDir, "info "+remoteRepo)
+	outb, err := vcsBzr.runOutput(rootDir, "info -- "+remoteRepo)
 	if err != nil {
 		return "", err
 	}
@@ -440,7 +440,7 @@ func bzrStatus(vcsBzr *Cmd, rootDir string) (Status, error) {
 	var rev string
 	var commitTime time.Time
 
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		i := strings.IndexByte(line, ':')
 		if i < 0 {
 			continue
@@ -511,9 +511,9 @@ func svnRemoteRepo(vcsSvn *Cmd, rootDir string) (remoteRepo string, err error) {
 
 	// Expect:
 	//
-	//	 ...
-	// 	URL: <URL>
-	// 	...
+	//       ...
+	//      URL: <URL>
+	//      ...
 	//
 	// Note that we're not using the Repository Root line,
 	// because svn allows checking out subtrees.
@@ -574,7 +574,7 @@ var vcsFossil = &Cmd{
 		{filename: "_FOSSIL_", isDir: false},
 	},
 
-	CreateCmd:   []string{"-go-internal-mkdir {dir} clone -- {repo} " + filepath.Join("{dir}", fossilRepoName), "-go-internal-cd {dir} open .fossil"},
+	CreateCmd:   []string{"--go-internal-mkdir {dir} clone -- {repo} " + filepath.Join("{dir}", fossilRepoName), "--go-internal-cd {dir} open .fossil"},
 	DownloadCmd: []string{"up"},
 
 	TagCmd:         []tagCmd{{"tag ls", `(.*)`}},
@@ -692,7 +692,7 @@ func (v *Cmd) run1(dir string, cmdline string, keyval []string, verbose bool) ([
 		args[i] = expand(m, arg)
 	}
 
-	if len(args) >= 2 && args[0] == "-go-internal-mkdir" {
+	if len(args) >= 2 && args[0] == "--go-internal-mkdir" {
 		var err error
 		if filepath.IsAbs(args[1]) {
 			err = os.Mkdir(args[1], fs.ModePerm)
@@ -705,7 +705,7 @@ func (v *Cmd) run1(dir string, cmdline string, keyval []string, verbose bool) ([
 		args = args[2:]
 	}
 
-	if len(args) >= 2 && args[0] == "-go-internal-cd" {
+	if len(args) >= 2 && args[0] == "--go-internal-cd" {
 		if filepath.IsAbs(args[1]) {
 			dir = args[1]
 		} else {
@@ -974,7 +974,7 @@ func parseGOVCS(s string) (govcsConfig, error) {
 	}
 	var cfg govcsConfig
 	have := make(map[string]string)
-	for _, item := range strings.Split(s, ",") {
+	for item := range strings.SplitSeq(s, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			return nil, fmt.Errorf("empty entry in GOVCS")
@@ -1416,6 +1416,10 @@ func repoRootForImportDynamic(importPath string, mod ModuleMode, security web.Se
 		}
 	}
 
+	if err := validateRepoSubDir(mmi.SubDir); err != nil {
+		return nil, fmt.Errorf("%s: invalid subdirectory %q: %v", resp.URL, mmi.SubDir, err)
+	}
+
 	if err := validateRepoRoot(mmi.RepoRoot); err != nil {
 		return nil, fmt.Errorf("%s: invalid repo root %q: %v", resp.URL, mmi.RepoRoot, err)
 	}
@@ -1445,6 +1449,22 @@ func repoRootForImportDynamic(importPath string, mod ModuleMode, security web.Se
 		VCS:      vcs,
 	}
 	return rr, nil
+}
+
+// validateRepoSubDir returns an error if subdir is not a valid subdirectory path.
+// We consider a subdirectory path to be valid as long as it doesn't have a leading
+// slash (/) or hyphen (-).
+func validateRepoSubDir(subdir string) error {
+	if subdir == "" {
+		return nil
+	}
+	if subdir[0] == '/' {
+		return errors.New("leading slash")
+	}
+	if subdir[0] == '-' {
+		return errors.New("leading hyphen")
+	}
+	return nil
 }
 
 // validateRepoRoot returns an error if repoRoot does not seem to be
